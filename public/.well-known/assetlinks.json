@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "dev.workers.tchieukomarcial.pronoapp.twa",
+    "sha256_cert_fingerprints": ["F4:B1:22:47:1A:7F:86:65:7E:3F:AB:6F:09:43:49:0B:B0:37:A5:24:9D:0F:79:DE:61:7C:85:F1:98:E9:43:58"]
+  }
+}]
