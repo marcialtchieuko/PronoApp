@@ -1,9 +1,12 @@
-const CACHE_NAME = "pronoapp-v4";
+const CACHE_NAME = "pronoapp-v5";
 const OFFLINE_URL = "/offline.html";
+const PRECACHE = ["/", OFFLINE_URL, "/manifest.json", "/icon-192.png", "/badge-96.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.add(OFFLINE_URL))
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(PRECACHE.map((u) => cache.add(u).catch(() => {})))
+    )
   );
   self.skipWaiting();
 });
@@ -17,21 +20,28 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// Réseau d'abord ; hors connexion, on sert la copie enregistrée de l'app (ou la page hors ligne).
+// Les appels à Supabase et au paiement (autres domaines) ne sont jamais mis en cache ici.
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET") return;
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
-    fetch(event.request)
+    fetch(req)
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        if (res.ok && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+        }
         return res;
       })
       .catch(async () => {
-        const cached = await caches.match(event.request);
+        const cached = await caches.match(req, { ignoreSearch: req.mode === "navigate" });
         if (cached) return cached;
-        if (event.request.mode === "navigate") {
-          return caches.match(OFFLINE_URL);
+        if (req.mode === "navigate") {
+          return (await caches.match("/")) || (await caches.match(OFFLINE_URL));
         }
         return new Response("", { status: 504 });
       })

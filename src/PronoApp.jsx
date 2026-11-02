@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   Gift,
   Bell,
+  WifiOff,
   Crown,
   CreditCard,
   Settings as GearIcon,
@@ -94,6 +95,11 @@ const STRINGS = {
     notifError: "Impossible d'activer les notifications. Réessayez.",
     notifSent: "Notification envoyée",
     notifyUsers: "Notifier les utilisateurs : pronos du jour en ligne",
+    offlineTitle: "Vous êtes hors connexion",
+    offlineText: "Impossible de joindre le serveur. Vérifiez votre connexion internet, puis réessayez.",
+    offlineRetry: "Réessayer",
+    offlineBanner: "Hors connexion : dernières données enregistrées",
+    offlineNeeded: "Une connexion internet est nécessaire pour cette action.",
     adminTitle: "Espace administrateur",
     adminConnected: "Connecté en tant qu'administrateur",
     addFreePrediction: "Ajouter un pronostic gratuit",
@@ -222,6 +228,11 @@ const STRINGS = {
     notifError: "Could not enable notifications. Please try again.",
     notifSent: "Notification sent",
     notifyUsers: "Notify users: today's tips are online",
+    offlineTitle: "You are offline",
+    offlineText: "Unable to reach the server. Check your internet connection and try again.",
+    offlineRetry: "Try again",
+    offlineBanner: "Offline: showing last saved data",
+    offlineNeeded: "An internet connection is required for this action.",
     adminTitle: "Admin area",
     adminConnected: "Logged in as administrator",
     addFreePrediction: "Add a free tip",
@@ -400,6 +411,19 @@ function safeGet(key) {
     return null;
   }
 }
+function loadCache(key) {
+  try {
+    const raw = safeGet(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCache(key, data) {
+  safeSet(key, JSON.stringify({ savedAt: Date.now(), data }));
+}
+
 function safeSet(key, value) {
   try {
     localStorage.setItem(key, value);
@@ -894,6 +918,8 @@ export default function PronoApp() {
   const [pushMsg, setPushMsg] = useState("");
   const [notifyBusy, setNotifyBusy] = useState(false);
   const [notifyMsg, setNotifyMsg] = useState("");
+  const [offline, setOffline] = useState(false);
+  const [cachedAt, setCachedAt] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const t = useCallback((key) => (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.fr[key] || key, [lang]);
@@ -928,6 +954,20 @@ export default function PronoApp() {
 
   const authHeaders = authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {};
 
+  useEffect(() => {
+    const goOffline = () => setOffline(true);
+    const goOnline = () => {
+      // Retour du réseau : on recharge pour retrouver une session et des données à jour
+      if (offline) window.location.reload();
+    };
+    window.addEventListener("offline", goOffline);
+    window.addEventListener("online", goOnline);
+    return () => {
+      window.removeEventListener("offline", goOffline);
+      window.removeEventListener("online", goOnline);
+    };
+  }, [offline]);
+
   const loadOrCreateProfile = useCallback(async (sess) => {
     const uidVal = sess.user.id;
     const res = await sbFetch(`/rest/v1/profiles?id=eq.${uidVal}&select=*`, {
@@ -935,6 +975,7 @@ export default function PronoApp() {
     });
     if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
       const row = res.data[0];
+      saveCache("cache_profile", row);
       setProfile({ firstName: row.first_name || "", lastName: row.last_name || "", email: row.email || sess.user.email });
       const active = !!row.vip_active && (!row.vip_expires_at || new Date(row.vip_expires_at).getTime() > Date.now());
       setVip({ active, plan: row.vip_plan || null, expiresAt: row.vip_expires_at || null });
@@ -960,8 +1001,16 @@ export default function PronoApp() {
   const reloadPredictions = useCallback(async () => {
     const res = await sbFetch("/rest/v1/predictions?select=*&order=match_date.desc");
     if (res.ok) {
+      saveCache("cache_predictions", res.data || []);
       setPredictions((res.data || []).map(dbToPrediction));
       setStorageOk(true);
+    } else if (res.status === 0) {
+      setOffline(true);
+      const c = loadCache("cache_predictions");
+      if (c && Array.isArray(c.data)) {
+        setPredictions(c.data.map(dbToPrediction));
+        setCachedAt(c.savedAt);
+      }
     } else {
       setStorageOk(false);
     }
@@ -972,8 +1021,16 @@ export default function PronoApp() {
       "/rest/v1/combos?select=*,combo_matches(*)&combo_matches.order=position.asc&order=date.desc"
     );
     if (res.ok) {
+      saveCache("cache_combos", res.data || []);
       setCombos((res.data || []).map(dbToCombo));
       setStorageOk(true);
+    } else if (res.status === 0) {
+      setOffline(true);
+      const c = loadCache("cache_combos");
+      if (c && Array.isArray(c.data)) {
+        setCombos(c.data.map(dbToCombo));
+        setCachedAt((prev) => prev || c.savedAt);
+      }
     } else {
       setStorageOk(false);
     }
@@ -1012,6 +1069,18 @@ export default function PronoApp() {
               setAuthSession(fresh);
               await safeSet("sb_session", JSON.stringify(fresh), false);
               await loadOrCreateProfile(fresh);
+            } else if (refreshRes.status === 0 && stored && stored.user && stored.access_token) {
+              // Hors connexion : on garde la session et on affiche les données enregistrées
+              setOffline(true);
+              activeSession = stored;
+              setAuthSession(stored);
+              const cp = loadCache("cache_profile");
+              if (cp && cp.data && cp.data.id === stored.user.id) {
+                const row = cp.data;
+                setProfile({ firstName: row.first_name || "", lastName: row.last_name || "", email: row.email || stored.user.email });
+                const active = !!row.vip_active && (!row.vip_expires_at || new Date(row.vip_expires_at).getTime() > Date.now());
+                setVip({ active, plan: row.vip_plan || null, expiresAt: row.vip_expires_at || null });
+              }
             } else {
               await safeDelete("sb_session", false);
             }
@@ -1416,6 +1485,10 @@ export default function PronoApp() {
 
   async function startCheckout(plan) {
     if (!authSession) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setPaymentError(t("offlineNeeded"));
+      return;
+    }
     setPaymentError("");
     setPaymentBusy(plan);
     try {
@@ -1826,6 +1899,14 @@ export default function PronoApp() {
           cursor: pointer;
         }
         .nav-btn.active { color: var(--blue); }
+        .offline-banner { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #FFF4E0; color: #7A4B00; font-size: 12px; font-weight: 600; border-bottom: 1px solid #F5D9A6; }
+        .offline-banner span { flex: 1; }
+        .offline-banner button { background: #F5A623; color: #2B1B02; border: none; font-weight: 700; font-size: 11px; padding: 5px 10px; border-radius: 999px; cursor: pointer; }
+        .offline-screen { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px 28px; background: var(--surface); }
+        .offline-icon { width: 72px; height: 72px; border-radius: 50%; background: var(--surface-2); color: var(--text-muted); display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+        .offline-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 26px; margin-bottom: 8px; }
+        .offline-text { font-size: 14px; color: var(--text-muted); line-height: 1.5; margin-bottom: 22px; max-width: 280px; }
+        .offline-btn { padding: 12px 28px; font-size: 14px; }
         .phone-shell { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; overflow: clip; }
 
         .modal-overlay { position: absolute; inset: 0; background: rgba(20,25,35,0.5); display: flex; align-items: flex-end; z-index: 20; }
@@ -1910,6 +1991,17 @@ export default function PronoApp() {
         <div className="phone-shell">
           {loading ? (
             <div className="loading-state">{t("loading")}</div>
+          ) : !authSession && offline ? (
+            <div className="offline-screen">
+              <div className="offline-icon">
+                <WifiOff size={30} />
+              </div>
+              <div className="offline-title">{t("offlineTitle")}</div>
+              <div className="offline-text">{t("offlineText")}</div>
+              <button className="subscribe-pill offline-btn" onClick={() => window.location.reload()}>
+                {t("offlineRetry")}
+              </button>
+            </div>
           ) : !authSession ? (
             <AuthGate
               screen={authScreen}
@@ -1936,6 +2028,24 @@ export default function PronoApp() {
                   </button>
                 )}
               </div>
+
+              {offline && (
+                <div className="offline-banner">
+                  <WifiOff size={14} />
+                  <span>
+                    {t("offlineBanner")}
+                    {cachedAt
+                      ? ` (${new Date(cachedAt).toLocaleString(lang === "en" ? "en-GB" : "fr-FR", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })})`
+                      : ""}
+                  </span>
+                  <button onClick={() => window.location.reload()}>{t("offlineRetry")}</button>
+                </div>
+              )}
 
               {!storageOk && <div className="storage-banner">{t("storageWarning")}</div>}
 
