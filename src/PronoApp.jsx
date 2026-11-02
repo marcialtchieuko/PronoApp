@@ -95,6 +95,14 @@ const STRINGS = {
     notifError: "Impossible d'activer les notifications. Réessayez.",
     notifSent: "Notification envoyée",
     notifyUsers: "Notifier les utilisateurs : pronos du jour en ligne",
+    referralTitle: "Parrainage",
+    referralIntro: "Partage ton lien. Quand un ami s'inscrit avec ton code puis s'abonne, tu gagnes 3 jours de VIP (maximum 10 amis).",
+    referralYourCode: "Ton code",
+    referralShare: "Partager mon lien",
+    referralCopied: "Lien copié !",
+    referralJoined: "inscrit(s)",
+    referralPaid: "abonné(s)",
+    referralShareText: "Rejoins PronoApp : pronostics foot gratuits et combinés VIP ! Utilise mon code :",
     offlineTitle: "Vous êtes hors connexion",
     offlineText: "Impossible de joindre le serveur. Vérifiez votre connexion internet, puis réessayez.",
     offlineRetry: "Réessayer",
@@ -228,6 +236,14 @@ const STRINGS = {
     notifError: "Could not enable notifications. Please try again.",
     notifSent: "Notification sent",
     notifyUsers: "Notify users: today's tips are online",
+    referralTitle: "Referral",
+    referralIntro: "Share your link. When a friend signs up with your code and then subscribes, you earn 3 days of VIP (up to 10 friends).",
+    referralYourCode: "Your code",
+    referralShare: "Share my link",
+    referralCopied: "Link copied!",
+    referralJoined: "joined",
+    referralPaid: "subscribed",
+    referralShareText: "Join PronoApp: free football tips and VIP combos! Use my code:",
     offlineTitle: "You are offline",
     offlineText: "Unable to reach the server. Check your internet connection and try again.",
     offlineRetry: "Try again",
@@ -919,6 +935,9 @@ export default function PronoApp() {
   const [notifyBusy, setNotifyBusy] = useState(false);
   const [notifyMsg, setNotifyMsg] = useState("");
   const [offline, setOffline] = useState(false);
+  const [referralCode, setReferralCode] = useState("");
+  const [refStats, setRefStats] = useState({ joined: 0, paid: 0 });
+  const [refMsg, setRefMsg] = useState("");
   const [cachedAt, setCachedAt] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
@@ -955,6 +974,47 @@ export default function PronoApp() {
   const authHeaders = authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {};
 
   useEffect(() => {
+    if (!authSession || offline) return;
+    let cancelled = false;
+    (async () => {
+      const h = { Authorization: `Bearer ${authSession.access_token}` };
+      const [codeRes, statsRes] = await Promise.all([
+        sbFetch(`/rest/v1/profiles?id=eq.${authSession.user.id}&select=referral_code`, { headers: h }),
+        sbFetch("/rest/v1/rpc/referral_stats", { method: "POST", headers: h, body: "{}" }),
+      ]);
+      if (cancelled) return;
+      if (codeRes.ok && Array.isArray(codeRes.data) && codeRes.data[0] && codeRes.data[0].referral_code) {
+        setReferralCode(codeRes.data[0].referral_code);
+      }
+      if (statsRes.ok && statsRes.data) setRefStats({ joined: statsRes.data.joined || 0, paid: statsRes.data.paid || 0 });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authSession, offline]);
+
+  async function shareReferral() {
+    if (!referralCode) return;
+    const link = `${window.location.origin}/?ref=${referralCode}`;
+    const text = t("referralShareText") + " " + referralCode;
+    setRefMsg("");
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "PronoApp", text, url: link });
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+    try {
+      await navigator.clipboard.writeText(`${text} ${link}`);
+      setRefMsg(t("referralCopied"));
+    } catch (e) {
+      setRefMsg(link);
+    }
+  }
+
+  useEffect(() => {
     const goOffline = () => setOffline(true);
     const goOnline = () => {
       // Retour du réseau : on recharge pour retrouver une session et des données à jour
@@ -968,6 +1028,19 @@ export default function PronoApp() {
     };
   }, [offline]);
 
+  const applyPendingReferral = useCallback(async (sess) => {
+    const meta = (sess.user && sess.user.user_metadata) || {};
+    const code = safeGet("pending_ref") || meta.referral_code;
+    if (!code) return;
+    const r = await sbFetch("/rest/v1/rpc/apply_referral", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${sess.access_token}` },
+      body: JSON.stringify({ p_code: String(code) }),
+    });
+    // On garde le code tant que la demande n'a pas reçu de réponse définitive
+    if (r.ok && r.data !== "no_profile") safeDelete("pending_ref");
+  }, []);
+
   const loadOrCreateProfile = useCallback(async (sess) => {
     const uidVal = sess.user.id;
     const res = await sbFetch(`/rest/v1/profiles?id=eq.${uidVal}&select=*`, {
@@ -976,6 +1049,8 @@ export default function PronoApp() {
     if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
       const row = res.data[0];
       saveCache("cache_profile", row);
+      if (row.referral_code) setReferralCode(row.referral_code);
+      if (!row.referred_by) applyPendingReferral(sess);
       setProfile({ firstName: row.first_name || "", lastName: row.last_name || "", email: row.email || sess.user.email });
       const active = !!row.vip_active && (!row.vip_expires_at || new Date(row.vip_expires_at).getTime() > Date.now());
       setVip({ active, plan: row.vip_plan || null, expiresAt: row.vip_expires_at || null });
@@ -1090,6 +1165,13 @@ export default function PronoApp() {
         }
 
         const params = new URLSearchParams(window.location.search);
+        const refParam = params.get("ref");
+        if (refParam) {
+          safeSet("pending_ref", refParam.trim().toUpperCase().slice(0, 16));
+          params.delete("ref");
+          const rest = params.toString();
+          window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
+        }
         const reference = params.get("reference") || params.get("trxref");
         if (reference) {
           window.history.replaceState({}, "", window.location.pathname);
@@ -1187,7 +1269,7 @@ export default function PronoApp() {
       body: JSON.stringify({
         email,
         password: authForm.password,
-        data: { first_name: firstName, last_name: lastName },
+        data: { first_name: firstName, last_name: lastName, referral_code: safeGet("pending_ref") || undefined },
       }),
     });
     setAuthBusy(false);
@@ -1899,6 +1981,14 @@ export default function PronoApp() {
           cursor: pointer;
         }
         .nav-btn.active { color: var(--blue); }
+        .referral-card { background: var(--surface); border-radius: 12px; padding: 14px; box-shadow: 0 1px 6px rgba(20,30,50,0.05); }
+        .referral-intro { font-size: 13px; color: var(--text-muted); line-height: 1.45; margin-bottom: 12px; }
+        .referral-code-row { display: flex; align-items: center; justify-content: space-between; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+        .referral-code-label { font-size: 12px; color: var(--text-muted); }
+        .referral-code { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: 2px; }
+        .referral-btn { width: 100%; justify-content: center; padding: 11px 14px; font-size: 13px; }
+        .referral-msg { font-size: 12px; color: var(--text-muted); margin-top: 8px; text-align: center; word-break: break-all; }
+        .referral-stats { font-size: 12px; color: var(--text-muted); text-align: center; margin-top: 10px; }
         .offline-banner { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #FFF4E0; color: #7A4B00; font-size: 12px; font-weight: 600; border-bottom: 1px solid #F5D9A6; }
         .offline-banner span { flex: 1; }
         .offline-banner button { background: #F5A623; color: #2B1B02; border: none; font-weight: 700; font-size: 11px; padding: 5px 10px; border-radius: 999px; cursor: pointer; }
@@ -2271,6 +2361,26 @@ export default function PronoApp() {
                         </div>
                         {pushMsg && <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "0 4px" }}>{pushMsg}</div>}
                       </div>
+
+                      {referralCode && (
+                        <div className="settings-group">
+                          <div className="settings-group-label">{t("referralTitle")}</div>
+                          <div className="referral-card">
+                            <div className="referral-intro">{t("referralIntro")}</div>
+                            <div className="referral-code-row">
+                              <span className="referral-code-label">{t("referralYourCode")}</span>
+                              <span className="referral-code">{referralCode}</span>
+                            </div>
+                            <button className="subscribe-pill referral-btn" onClick={shareReferral}>
+                              <Gift size={15} /> {t("referralShare")}
+                            </button>
+                            {refMsg && <div className="referral-msg">{refMsg}</div>}
+                            <div className="referral-stats">
+                              {refStats.joined} {t("referralJoined")} · {refStats.paid} {t("referralPaid")}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="settings-group">
                         <div className="settings-group-label">{t("legal")}</div>
