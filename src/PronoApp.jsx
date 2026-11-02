@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Gift,
+  Bell,
   Crown,
   CreditCard,
   Settings as GearIcon,
@@ -34,6 +35,7 @@ const SUPABASE_URL = "https://novwnjvkaxamjatisgik.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_LUuZOg_f05PFIVdXwTeYrA_kmoAykLX";
 const PAYMENTS_WORKER_URL = "https://pronoapp-payments.tchieukomarcial.workers.dev";
 const ADMIN_EMAILS = ["tchieukomarcial@gmail.com"];
+const VAPID_PUBLIC_KEY = "BGKLe52v2WDTZgLrd-pBbpVQ2ZJ11hx6TOie3BBdXRIagPYJl6TOYJaq3XMhvIUfi4g5o3CJPugOnYS7-bJUEfE";
 
 const LEAGUES_PLACEHOLDER = "Ligue 1";
 
@@ -83,6 +85,15 @@ const STRINGS = {
     contactSupport: "Nous contacter par email",
     vipMember: "Membre VIP",
     logout: "Se déconnecter",
+    notifications: "Notifications",
+    enableNotif: "Activer les notifications",
+    disableNotif: "Désactiver les notifications",
+    notifOn: "Notifications activées",
+    notifDenied: "Notifications bloquées dans votre navigateur. Autorisez-les dans les réglages du site.",
+    notifUnsupported: "Les notifications ne sont pas disponibles sur cet appareil. Sur iPhone, ajoutez d'abord l'app à l'écran d'accueil.",
+    notifError: "Impossible d'activer les notifications. Réessayez.",
+    notifSent: "Notification envoyée",
+    notifyUsers: "Notifier les utilisateurs : pronos du jour en ligne",
     adminTitle: "Espace administrateur",
     adminConnected: "Connecté en tant qu'administrateur",
     addFreePrediction: "Ajouter un pronostic gratuit",
@@ -202,6 +213,15 @@ const STRINGS = {
     contactSupport: "Contact us by email",
     vipMember: "VIP member",
     logout: "Log out",
+    notifications: "Notifications",
+    enableNotif: "Enable notifications",
+    disableNotif: "Disable notifications",
+    notifOn: "Notifications enabled",
+    notifDenied: "Notifications are blocked in your browser. Allow them in the site settings.",
+    notifUnsupported: "Notifications are not available on this device. On iPhone, add the app to your home screen first.",
+    notifError: "Could not enable notifications. Please try again.",
+    notifSent: "Notification sent",
+    notifyUsers: "Notify users: today's tips are online",
     adminTitle: "Admin area",
     adminConnected: "Logged in as administrator",
     addFreePrediction: "Add a free tip",
@@ -395,6 +415,21 @@ function safeDelete(key) {
   } catch {
     return false;
   }
+}
+
+
+// ---- Notifications push ----
+function urlBase64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function pushSupported() {
+  return typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 }
 
 // ---- Appels Supabase (REST direct, pas de SDK) ----
@@ -854,6 +889,11 @@ export default function PronoApp() {
   const [paymentReference, setPaymentReference] = useState(null);
   const [recheckBusy, setRecheckBusy] = useState(false);
   const [paymentError, setPaymentError] = useState("");
+  const [pushOn, setPushOn] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMsg, setPushMsg] = useState("");
+  const [notifyBusy, setNotifyBusy] = useState(false);
+  const [notifyMsg, setNotifyMsg] = useState("");
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const t = useCallback((key) => (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.fr[key] || key, [lang]);
@@ -1116,7 +1156,100 @@ export default function PronoApp() {
     setAuthBusy(false);
   }
 
+  // ---- Notifications push ----
+  useEffect(() => {
+    if (!pushSupported()) return;
+    navigator.serviceWorker.ready
+      .then((reg) => reg.pushManager.getSubscription())
+      .then((sub) => setPushOn(!!sub && Notification.permission === "granted"))
+      .catch(() => {});
+  }, [authSession]);
+
+  async function enablePush() {
+    if (!authSession) return;
+    setPushMsg("");
+    if (!pushSupported()) {
+      setPushMsg(t("notifUnsupported"));
+      return;
+    }
+    setPushBusy(true);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setPushMsg(t("notifDenied"));
+        setPushBusy(false);
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+      const json = sub.toJSON();
+      const res = await sbFetch("/rest/v1/push_subscriptions?on_conflict=endpoint", {
+        method: "POST",
+        headers: { ...authHeaders, Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify({
+          user_id: authSession.user.id,
+          endpoint: json.endpoint,
+          p256dh: json.keys && json.keys.p256dh,
+          auth: json.keys && json.keys.auth,
+        }),
+      });
+      if (!res.ok) throw new Error(res.error || "save");
+      setPushOn(true);
+    } catch (e) {
+      setPushMsg(t("notifError"));
+    }
+    setPushBusy(false);
+  }
+
+  async function disablePush(silent) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        if (authSession) {
+          await sbFetch(`/rest/v1/push_subscriptions?endpoint=eq.${encodeURIComponent(sub.endpoint)}`, {
+            method: "DELETE",
+            headers: authHeaders,
+          });
+        }
+        await sub.unsubscribe();
+      }
+    } catch (e) {}
+    if (!silent) setPushOn(false);
+  }
+
+  async function sendDailyNotification() {
+    if (!authSession || !isAdmin) return;
+    setNotifyBusy(true);
+    setNotifyMsg("");
+    try {
+      const res = await withTimeout(
+        fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${authSession.access_token}`,
+          },
+          body: JSON.stringify({ mode: "daily" }),
+        })
+      );
+      const data = await res.json().catch(() => ({}));
+      setNotifyMsg(res.ok ? `${t("notifSent")} (${data.sent ?? 0})` : data.error || t("notifError"));
+    } catch (e) {
+      setNotifyMsg(t("notifError"));
+    }
+    setNotifyBusy(false);
+  }
+
   async function handleLogout() {
+    if (pushOn) await disablePush(true);
     if (authSession) {
       await sbFetch("/auth/v1/logout", {
         method: "POST",
@@ -1992,6 +2125,28 @@ export default function PronoApp() {
                       </div>
 
                       <div className="settings-group">
+                        <div className="settings-group-label">{t("notifications")}</div>
+                        <div
+                          className="settings-row"
+                          style={{ cursor: pushBusy ? "default" : "pointer", opacity: pushBusy ? 0.6 : 1 }}
+                          onClick={() => {
+                            if (pushBusy) return;
+                            if (pushOn) disablePush(false);
+                            else enablePush();
+                          }}
+                        >
+                          <span className="settings-row-left">
+                            <span className="settings-row-icon">
+                              <Bell size={15} />
+                            </span>
+                            {pushOn ? t("disableNotif") : t("enableNotif")}
+                          </span>
+                          <span className="chev">{pushOn ? "✓" : "›"}</span>
+                        </div>
+                        {pushMsg && <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "0 4px" }}>{pushMsg}</div>}
+                      </div>
+
+                      <div className="settings-group">
                         <div className="settings-group-label">{t("legal")}</div>
                         <div className="settings-row" onClick={() => setShowPolicy(true)} style={{ cursor: "pointer" }}>
                           <span className="settings-row-left">
@@ -2039,6 +2194,10 @@ export default function PronoApp() {
                           <button className="btn-secondary" onClick={openCreateCombo}>
                             <Plus size={15} /> {t("addCombo")}
                           </button>
+                          <button className="btn-secondary" onClick={sendDailyNotification} disabled={notifyBusy}>
+                            <Bell size={15} /> {t("notifyUsers")}
+                          </button>
+                          {notifyMsg && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>{notifyMsg}</div>}
                         </div>
                       )}
                     </>
