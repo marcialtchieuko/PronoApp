@@ -1502,9 +1502,15 @@ export default function PronoApp() {
         }
         * { box-sizing: border-box; }
         button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+        html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
         .app-root {
           background: var(--bg);
-          min-height: 100vh;
+          position: fixed;
+          inset: 0;
+          height: 100vh;
+          height: 100dvh;
+          overflow: hidden;
+          overflow: clip;
           display: flex;
           justify-content: center;
           font-family: 'Inter', sans-serif;
@@ -1519,13 +1525,21 @@ export default function PronoApp() {
           border: 1px solid var(--line);
           box-shadow: 0 30px 60px -20px rgba(20,30,50,0.25);
           overflow: hidden;
+          overflow: clip;
           display: flex;
           flex-direction: column;
-          min-height: 720px;
+          height: 100%;
+          max-height: 880px;
+          min-height: 0;
         }
-        .lang-bar { display: flex; justify-content: flex-end; padding: 8px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+        @media (max-width: 520px) {
+          .app-root { padding: 0; }
+          .phone { max-width: none; max-height: none; border-radius: 0; border: none; box-shadow: none; }
+        }
+        .lang-bar { flex-shrink: 0; display: flex; justify-content: flex-end; padding: 8px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
         .lang-toggle { display: flex; align-items: center; gap: 5px; background: var(--surface); border: 1px solid var(--line); color: var(--text); font-size: 11px; font-weight: 700; padding: 5px 10px; border-radius: 999px; cursor: pointer; }
         .topbar {
+          flex-shrink: 0;
           padding: 20px 20px 14px;
           display: flex;
           align-items: center;
@@ -1552,7 +1566,7 @@ export default function PronoApp() {
         }
         .subscribe-pill { background: linear-gradient(180deg, #FBC15E, var(--gold)); color: #2B1B02; }
         .vip-pill { background: var(--surface-2); color: var(--gold); border: 1px solid var(--gold-dim); }
-        .content { flex: 1; overflow-y: auto; padding: 4px 16px 90px; background: var(--bg); }
+        .content { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 4px 16px 90px; background: var(--bg); }
         .section-title {
           font-family: 'Barlow Condensed', sans-serif;
           font-weight: 700;
@@ -1795,6 +1809,8 @@ export default function PronoApp() {
           backdrop-filter: blur(6px);
           border-top: 1px solid var(--line);
           display: flex;
+          padding-bottom: env(safe-area-inset-bottom);
+          z-index: 10;
         }
         .nav-btn {
           flex: 1;
@@ -1810,7 +1826,7 @@ export default function PronoApp() {
           cursor: pointer;
         }
         .nav-btn.active { color: var(--blue); }
-        .phone-shell { position: relative; flex: 1; display: flex; flex-direction: column; }
+        .phone-shell { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; overflow: clip; }
 
         .modal-overlay { position: absolute; inset: 0; background: rgba(20,25,35,0.5); display: flex; align-items: flex-end; z-index: 20; }
         .modal-sheet { background: var(--surface); width: 100%; border-radius: 20px 20px 0 0; padding: 20px; max-height: 85%; overflow-y: auto; }
