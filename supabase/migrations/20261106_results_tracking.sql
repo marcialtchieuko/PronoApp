@@ -24,11 +24,15 @@ begin
     into v_pending, v_lost, v_won
   from public.combo_matches where combo_id = v_combo;
 
+  -- Aucun résultat saisi : on ne touche pas au statut déjà enregistré.
+  if v_won + v_lost = 0 then
+    return null;
+  end if;
+
   update public.combos set status = case
       when v_lost > 0 then 'lost'
       when v_pending > 0 then 'pending'
-      when v_won > 0 then 'won'
-      else 'void' end
+      else 'won' end
   where id = v_combo;
   return null;
 end;
