@@ -147,6 +147,13 @@ const STRINGS = {
     homeScore: "Score domicile",
     awayScore: "Score extérieur",
     resultAfterMatch: "Résultat (à remplir après le match)",
+    trackTitle: "Nos résultats réels",
+    trackSub: "Taux mesuré sur les 30 derniers jours, mis à jour automatiquement.",
+    trackFree: "Pronos gratuits",
+    trackVipPicks: "Picks du Combiné VIP",
+    trackVipCombos: "Combinés VIP complets",
+    trackNoData: "Pas encore assez de résultats.",
+    trackWonLost: "gagnés / perdus",
     pending: "En attente",
     won: "Gagné ✅",
     lost: "Perdu ❌",
@@ -287,6 +294,13 @@ const STRINGS = {
     homeScore: "Home score",
     awayScore: "Away score",
     resultAfterMatch: "Result (fill in after the match)",
+    trackTitle: "Our real results",
+    trackSub: "Success rate measured over the last 30 days, updated automatically.",
+    trackFree: "Free tips",
+    trackVipPicks: "VIP combo picks",
+    trackVipCombos: "Full VIP combos",
+    trackNoData: "Not enough results yet.",
+    trackWonLost: "won / lost",
     pending: "Pending",
     won: "Won ✅",
     lost: "Lost ❌",
@@ -339,7 +353,7 @@ const emptyForm = {
 };
 
 function matchRowEmpty() {
-  return { id: uid(), league: "", time: "", homeTeam: "", awayTeam: "", tip: "", odds: "", homeScore: "", awayScore: "" };
+  return { id: uid(), league: "", time: "", homeTeam: "", awayTeam: "", tip: "", odds: "", homeScore: "", awayScore: "", result: "pending" };
 }
 
 const emptyComboForm = {
@@ -590,6 +604,7 @@ function dbToCombo(row) {
       odds: m.odds || "",
       homeScore: m.home_score == null ? "" : m.home_score,
       awayScore: m.away_score == null ? "" : m.away_score,
+      result: m.result || "pending",
     })),
   };
 }
@@ -937,6 +952,7 @@ export default function PronoApp() {
   const [offline, setOffline] = useState(false);
   const [referralCode, setReferralCode] = useState("");
   const [refStats, setRefStats] = useState({ joined: 0, paid: 0 });
+  const [trackRecord, setTrackRecord] = useState(null);
   const [refMsg, setRefMsg] = useState("");
   const [cachedAt, setCachedAt] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
@@ -992,6 +1008,22 @@ export default function PronoApp() {
       cancelled = true;
     };
   }, [authSession, offline]);
+
+  useEffect(() => {
+    if (!authSession || offline) return;
+    let cancelled = false;
+    (async () => {
+      const res = await sbFetch("/rest/v1/rpc/track_record", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authSession.access_token}` },
+        body: JSON.stringify({ p_days: 30 }),
+      });
+      if (!cancelled && res.ok && res.data) setTrackRecord(res.data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authSession, offline, tab]);
 
   async function shareReferral() {
     if (!referralCode) return;
@@ -1544,6 +1576,7 @@ export default function PronoApp() {
         odds: m.odds,
         home_score: m.homeScore === "" ? null : m.homeScore,
         away_score: m.awayScore === "" ? null : m.awayScore,
+        result: m.result || "pending",
         position: idx,
       }));
     if (matchRows.length > 0) {
@@ -2323,6 +2356,37 @@ export default function PronoApp() {
                         </div>
                       </div>
 
+                      {trackRecord && (
+                        <div className="settings-group">
+                          <div className="settings-group-label">{t("trackTitle")}</div>
+                          <div className="referral-card">
+                            <div className="referral-intro">{t("trackSub")}</div>
+                            {[
+                              ["trackFree", trackRecord.free_picks],
+                              ["trackVipPicks", trackRecord.vip_picks],
+                              ["trackVipCombos", trackRecord.vip_combos],
+                            ].map(([key, s]) => (
+                              <div
+                                key={key}
+                                style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "6px 0", fontSize: 13 }}
+                              >
+                                <span>{t(key)}</span>
+                                <span style={{ fontWeight: 800 }}>
+                                  {s && s.rate != null ? `${s.rate}%` : "—"}
+                                  <span style={{ fontWeight: 400, fontSize: 11, color: "var(--text-muted)", marginLeft: 6 }}>
+                                    {s ? `${s.won} / ${s.lost}` : ""}
+                                  </span>
+                                </span>
+                              </div>
+                            ))}
+                            {!(trackRecord.free_picks && (trackRecord.free_picks.won + trackRecord.free_picks.lost > 0)) &&
+                              !(trackRecord.vip_picks && (trackRecord.vip_picks.won + trackRecord.vip_picks.lost > 0)) && (
+                                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("trackNoData")}</div>
+                              )}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="settings-group">
                         <div className="settings-group-label">{t("account")}</div>
                         <div
@@ -2690,17 +2754,6 @@ export default function PronoApp() {
                             placeholder="Ex : 12,50"
                           />
                         </div>
-                        <div className="field">
-                          <label>{t("status")}</label>
-                          <select
-                            value={comboForm.status}
-                            onChange={(e) => setComboForm({ ...comboForm, status: e.target.value })}
-                          >
-                            <option value="pending">{t("pending")}</option>
-                            <option value="won">{t("won")}</option>
-                            <option value="lost">{t("lost")}</option>
-                          </select>
-                        </div>
                       </div>
 
                       <label style={{ display: "block", fontSize: 12, color: "var(--text-muted)", margin: "16px 0 10px" }}>
@@ -2788,6 +2841,17 @@ export default function PronoApp() {
                                 placeholder="Ex : 0"
                               />
                             </div>
+                          </div>
+                          <div className="field">
+                            <label>{t("resultAfterMatch")}</label>
+                            <select
+                              value={m.result || "pending"}
+                              onChange={(e) => updateMatchField(m.id, "result", e.target.value)}
+                            >
+                              <option value="pending">{t("pending")}</option>
+                              <option value="won">{t("won")}</option>
+                              <option value="lost">{t("lost")}</option>
+                            </select>
                           </div>
                         </div>
                       ))}
